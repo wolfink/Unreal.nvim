@@ -20,8 +20,16 @@ if not vim then
     vim = {}
 end
 
-
 local logFilePath = vim.fn.stdpath("data") .. '/unrealnvim.log'
+
+local function getSysname()
+  if vim.fn.has("win64") == 1 then
+    return "Win64"
+  elseif vim.fn.has("win32") == 1 then
+    return "Win32"
+  end
+  return "Linux"
+end
 
 local function logWithVerbosity(verbosity, message)
     if not vim.g.unrealnvim_debug then return end
@@ -185,42 +193,42 @@ function Commands._CreateConfigFile(configFilePath, projectName)
             "Configuration" : "DebugGame",
             "withEditor" : true,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. getSysname() .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "DebugGame",
             "withEditor" : false,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. getSysname() .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[-Editor",
             "Configuration" : "Development",
             "withEditor" : true,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. getSysname() .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "Development",
             "withEditor" : false,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. getSysname() .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[-Editor",
             "Configuration" : "Shipping",
             "withEditor" : true,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. getSysname() .. [["
         },
         {
             "TargetName" : "]] .. projectName .. [[",
             "Configuration" : "Shipping",
             "withEditor" : false,
             "UbtExtraFlags" : "",
-            "PlatformName" : "Win64"
+            "PlatformName" : "]] .. getSysname() .. [["
         }
     ]
 }
@@ -313,9 +321,9 @@ end
 function ExtractRSP(rsppath)
     local extraFlags = "-std=c++20 -Wno-deprecated-enum-enum-conversion -Wno-deprecated-anon-enum-enum-conversion -ferror-limit=0 -Wno-inconsistent-missing-override"
     local extraIncludes = {
-        "Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h",
-        "Engine/Source/Runtime/Core/Public/Misc/EnumRange.h"
-    }
+            "Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h",
+            "Engine/Source/Runtime/Core/Public/Misc/EnumRange.h"
+        }
 
     rsppath = rsppath:gsub("\\\\","/")
     PrintAndLogMessage(rsppath)
@@ -327,12 +335,20 @@ function ExtractRSP(rsppath)
         local discardLine = true
 
         -- ignored lines
-        if line:find("^/FI") then discardLine = false end
-        if line:find("^/I") then discardLine = false end
-        if line:find("^-W") then discardLine = false end
+        if CurrentGenData.target.PlatformName == "Linux" then
+            if line:find("^-include") then discardLine = false end
+            if line:find("^-I") then discardLine = false end
+            if line:find("^-isystem") then discardLine = false end
+            if line:find("^-W") then discardLine = false end
+        else
+            if line:find("^/FI") then discardLine = false end
+            if line:find("^/I") then discardLine = false end
+            if line:find("^-W") then discardLine = false end
 
-        line = line:gsub("^/FI", "-include ")
-        line = line:gsub("^(/I )(.*)", "-I \"%2\"")
+            line = line:gsub("^/FI", "-include ")
+            line = line:gsub("^(/I )(.*)", "-I \"%2\"")
+        end
+
 
         if isFirstLine then
             discardLine = false
@@ -353,7 +369,16 @@ function ExtractRSP(rsppath)
     lines[lineNb] =  "\n" .. extraFlags
     lineNb = lineNb + 1
     --table.insert(lines, "\n\"" .. currentFilename .. "\"")
-    return table.concat(lines)
+    local return_string = table.concat(lines)
+    if CurrentGenData.target.PlatformName == "Linux" then
+        local rspdirectory = rsppath:match("(.*/)")
+        local shared_file = rspdirectory .. CurrentGenData.prjName .. ".Shared.rsp"
+        if shared_file ~= rsppath then
+            local shared_string = ExtractRSP(rspdirectory .. CurrentGenData.prjName .. ".Shared.rsp")
+            return_string = return_string .. "\n" .. shared_string
+        end
+    end
+    return return_string
 end
 
 function CreateCommandLine()
@@ -462,7 +487,13 @@ function Stage_UbtGenCmd()
     end
     AppendToQF(qflistentry)
 
+    local clang_cmd = "clang++"
+    if CurrentGenData.target.PlatformName == "Win64" or CurrentGenData.target.PlatformName == "Win32" then
+      clang_cmd = clang_cmd .. ".exe"
+    end
+
     local currentFilename = ""
+
     for line in io.lines(file_path) do
         local i,j = line:find("\"command")
         if i then
@@ -482,12 +513,24 @@ function Stage_UbtGenCmd()
             line = line:gsub(old_text, new_text)
 
             -- content = content .. "matched:\n"
-            i,j = line:find("%@")
+            if CurrentGenData.target.PlatformName == "Linux" then
+                i,j = line:find("%@\\\"")
+            else
+                i,j = line:find("%@")
+            end
             if i then
-                local _,endpos = line:find("\"", j)
+                local endpos = nil
+                if CurrentGenData.target.PlatformName == "Linux" then
+                    _, endpos = line:find("\\\"", j)
+                    endpos = endpos - 1
+                else
+                    _, endpos = line:find("\"", j)
+                end
+
                 local rsppath = line:sub(j+1, endpos-1)
                 if rsppath then
                     local newrsppath = rsppath .. ".clang.rsp"
+                    print(rsppath)
 
                     -- rewrite rsp contents
                     if not shouldSkipFile then
@@ -498,7 +541,7 @@ function Stage_UbtGenCmd()
                     end
                     coroutine.yield()
 
-                    table.insert(contentLines, "\t\t\"command\": \"clang++.exe @\\\"" ..newrsppath .."\\\"\",\n")
+                    table.insert(contentLines, "\t\t\"command\": \""..clang_cmd.." @\\\"" ..newrsppath .."\\\"\",\n")
                 end
             else
                 -- it's not an rsp command, the flags will be clang compatible
@@ -536,7 +579,7 @@ function Stage_UbtGenCmd()
                 end
                 coroutine.yield()
 
-                table.insert(contentLines, "\t\t\"command\": \"clang++.exe @\\\"" .. EscapePath(rspfilepath) .."\\\""
+                table.insert(contentLines, "\t\t\"command\": \""..clang_cmd.." @\\\"" .. EscapePath(rspfilepath) .."\\\""
                     .. " ".. EscapePath(currentFilename) .."\",\n")
             end
         else
@@ -568,7 +611,12 @@ function Stage_UbtGenCmd()
         callback = FuncBind(DispatchUnrealnvimCb, "headers")
     })
 
-    local cmd = CurrentGenData.ubtPath .. " -project=" ..
+    local cmd = ""
+    if CurrentGenData.target.PlatformName == "Linux" then
+        cmd = "source " .. CurrentGenData.config.EngineDir .. "/Engine/Build/BatchFiles/Linux/SetupEnvironment.sh -dotnet " ..
+        CurrentGenData.config.EngineDir .. "/Engine/Build/BatchFiles/Linux && dotnet "
+    end
+    cmd = cmd .. CurrentGenData.ubtPath .. " -project=" ..
         CurrentGenData.projectPath .. " " .. CurrentGenData.target.UbtExtraFlags .. " " ..
         CurrentGenData.prjName .. CurrentGenData.targetNameSuffix .. " " .. CurrentGenData.target.Configuration .. " " ..
         CurrentGenData.target.PlatformName .. " -headers"
@@ -660,14 +708,21 @@ function InitializeCurrentGenData()
         return false
     end
 
-    CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe\""
-    CurrentGenData.ueBuildBat = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Build/BatchFiles/Build.bat\""
-    CurrentGenData.projectPath = "\"" .. CurrentGenData.prjDir .. "/" .. 
-        CurrentGenData.prjName .. ".uproject\""
-
     local desiredTargetIndex = PromptBuildTargetIndex()
 
     CurrentGenData.target = CurrentGenData.config.Targets[desiredTargetIndex]
+
+    if CurrentGenData.target.PlatformName == "Linux" then
+        CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.dll\""
+        CurrentGenData.ueBuildBat = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Build/BatchFiles/Linux/Build.sh\""
+        CurrentGenData.projectPath = "\"" .. CurrentGenData.prjDir .. "/" .. 
+            CurrentGenData.prjName .. ".uproject\""
+    else
+        CurrentGenData.ubtPath = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe\""
+        CurrentGenData.ueBuildBat = "\"" .. CurrentGenData.config.EngineDir .."/Engine/Build/BatchFiles/Build.bat\""
+        CurrentGenData.projectPath = "\"" .. CurrentGenData.prjDir .. "/" .. 
+            CurrentGenData.prjName .. ".uproject\""
+    end
 
     CurrentGenData.targetNameSuffix = ""
     if CurrentGenData.target.withEditor then
@@ -759,7 +814,11 @@ function Commands.run(opts)
         end
 
         local executablePath = "\"".. CurrentGenData.config.EngineDir .. "/Engine/Binaries/" ..
-        CurrentGenData.target.PlatformName .. "/UnrealEditor" ..  editorSuffix .. ".exe\""
+        CurrentGenData.target.PlatformName .. "/UnrealEditor" ..  editorSuffix
+        if CurrentGenData.target.PlatformName == "Win64" or CurrentGenData.target.PlatformName == "Win32" then
+          executablePath = executablePath .. ".exe"
+        end
+        executablePath = executablePath .. "\""
 
         cmd = executablePath .. " " ..
         CurrentGenData.projectPath .. " -skipcompile"
@@ -771,7 +830,11 @@ function Commands.run(opts)
         end
 
         local executablePath = "\"".. CurrentGenData.prjDir .. "/Binaries/" ..
-        CurrentGenData.target.PlatformName .. "/" .. CurrentGenData.prjName ..  exeSuffix .. ".exe\""
+        CurrentGenData.target.PlatformName .. "/" .. CurrentGenData.prjName ..  exeSuffix
+        if CurrentGenData.target.PlatformName == "Win64" or CurrentGenData.target.PlatformName == "Win32" then
+          executablePath = executablePath .. ".exe"
+        end
+        executablePath = executablePath .. "\""
 
         cmd = executablePath
     end
@@ -922,8 +985,14 @@ function Commands.generateCommandsCoroutine()
     end
 
     Commands.ScheduleTask("gencmd")
+    local cmd = ""
+    if CurrentGenData.target.PlatformName == "Linux" then
+        cmd = "source " .. CurrentGenData.config.EngineDir .. "/Engine/Build/BatchFiles/Linux/SetupEnvironment.sh -dotnet " ..
+        CurrentGenData.config.EngineDir .. "/Engine/Build/BatchFiles/Linux && dotnet "
+    end
+
     -- local cmd = CurrentGenData.ubtPath .. " -mode=GenerateClangDatabase -StaticAnalyzer=Clang -project=" ..
-    local cmd = CurrentGenData.ubtPath .. " -mode=GenerateClangDatabase -project=" ..
+    cmd = cmd .. CurrentGenData.ubtPath .. " -mode=GenerateClangDatabase -project=" ..
     CurrentGenData.projectPath .. " -game -engine " .. CurrentGenData.target.UbtExtraFlags .. " " ..
     editorFlag .. " " ..
     CurrentGenData.prjName .. CurrentGenData.targetNameSuffix .. " " .. CurrentGenData.target.Configuration .. " " ..
